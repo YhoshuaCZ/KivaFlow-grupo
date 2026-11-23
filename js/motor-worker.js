@@ -1,45 +1,27 @@
 /* =========================================================
-   KivaFlow · Motor de algoritmos en un Web Worker
-   Corre BFS, Bellman-Ford y Edmonds-Karp en un hilo aparte,
-   así la página sigue respondiendo aunque el grafo crezca.
-   Usa exactamente las mismas funciones de js/algorithms.js.
-
-   Mensajes que recibe:
-     { tipo: "iniciar", instantanea }         grafo completo (una sola vez)
-     { tipo: "cambios", cambios: [...] }      solo los nodos/aristas nuevos
-     { tipo: "ejecutar", id, alg, perfil, inicio, destino, zonaS, zonaT }
-   Mensajes que envía:
-     { tipo: "listo" | "sincronizado", V, E }
-     { tipo: "resultado", id, alg, ... }  o  { tipo: "error", id, mensaje }
+   KivaFlow · Web Worker de cálculo
+   Tiene su propia copia del grafo. Recibe solo los cambios
+   (ubicación, pasillo o filas nuevas) y las tareas a calcular;
+   así BFS, Bellman-Ford y Edmonds-Karp no bloquean la página.
    ========================================================= */
-/* global importScripts */
-self.window = self; // data.js y algorithms.js se registran en `window.KF`
-importScripts("data.js", "algorithms.js", "grafo-editable.js");
+self.window = self;
+importScripts("data.js?v=20261123b", "algorithms.js?v=20261123b", "edicion.js?v=20261123b", "tareas.js?v=20261123b");
 
-const KF = self.KF;
-let grafo = null;
-
-function aplicarCambios(cambios) {
-  for (const c of cambios) {
-    if (c.t === "n") grafo.agregarNodo(c.fila, c.col, { id: c.id, zona: c.zona });
-    else if (c.t === "e") grafo.agregarArista(c.u, c.v, c.frec, c.dist);
-    else if (c.t === "filas") grafo.rows = c.rows;
-  }
-}
+let data = null;
 
 self.onmessage = (ev) => {
-  const msg = ev.data;
+  const m = ev.data;
   try {
-    if (msg.tipo === "iniciar") {
-      grafo = KF.GrafoEditable.desdeInstantanea(msg.instantanea);
-      self.postMessage({ tipo: "listo", V: grafo.V, E: grafo.E });
-    } else if (msg.tipo === "cambios") {
-      aplicarCambios(msg.cambios);
-      self.postMessage({ tipo: "sincronizado", V: grafo.V, E: grafo.E });
-    } else if (msg.tipo === "ejecutar") {
-      self.postMessage(KF.ejecutarEnGrafo(grafo, msg));
+    if (m.tipo === "iniciar") {
+      data = self.KF.construirDataset(m.csv.nodos, m.csv.aristas);
+      for (const op of m.cambios || []) self.KF.aplicarCambio(data, op);
+    } else if (m.tipo === "cambio") {
+      self.KF.aplicarCambio(data, m.op);
+    } else if (m.tipo === "calcular") {
+      const resultado = self.KF.TAREAS[m.tarea](data, m.args);
+      self.postMessage({ tipo: "resultado", id: m.id, resultado });
     }
-  } catch (err) {
-    self.postMessage({ tipo: "error", id: msg.id, mensaje: err && err.message ? err.message : String(err) });
+  } catch (e) {
+    self.postMessage({ tipo: "error", id: m.id, mensaje: String((e && e.message) || e) });
   }
 };

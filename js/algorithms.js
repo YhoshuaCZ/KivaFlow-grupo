@@ -539,6 +539,8 @@
 
   /* ---------- Simulación de un turno ---------- */
   KF.simularTurno = function (data, opts) {
+    const tiempos = { base: 0, ruteo: 0, flujo: 0 };
+    let tReloj = performance.now();
     const rng = KF.mulberry32(opts.semilla || 1);
     const operators = [];
     const muelles = data.estacionesDespacho.length ? data.estacionesDespacho : data.estaciones;
@@ -552,6 +554,10 @@
       null
     );
     const baseFlow = baseEk.maxFlow;
+    tiempos.base = performance.now() - tReloj;
+    tReloj = performance.now();
+    let pico = 0; // nodos descubiertos en la búsqueda más grande (para estimar memoria)
+    let stats = { visitados: 0, aristas: 0, rondas: 0, relajaciones: 0 };
 
     const isAntiBottleneck = opts.alg === "edmonds_karp";
     const isDynamicBf = opts.alg === "bellman_ford" || isAntiBottleneck;
@@ -602,6 +608,16 @@
       } else {
         r = KF.rutaPedido(data, opts.hora, start, picks, opts.alg, false, true);
       }
+      stats.visitados += r.stats.visited;
+      stats.aristas += r.stats.edgesChecked;
+      stats.rondas += r.stats.rounds;
+      stats.relajaciones += r.stats.relaxations;
+      if (r.stats.visited > pico) pico = r.stats.visited;
+      // Pasillos de esta ruta que ya habían planificado los operarios anteriores
+      let compartidos = 0;
+      for (let j = 0; j < r.path.length - 1; j++) {
+        if (liveUsage.has(KF.edgeKey(r.path[j], r.path[j + 1]))) compartidos++;
+      }
       for (let j = 0; j < r.path.length - 1; j++) {
         const kEdge = KF.edgeKey(r.path[j], r.path[j + 1]);
         liveUsage.set(kEdge, (liveUsage.get(kEdge) || 0) + 1);
@@ -617,8 +633,10 @@
         racks: picks,
         path: r.path,
         tiempoS: met.tiempoS,
+        compartidos,
       });
     }
+    tiempos.ruteo = performance.now() - tReloj;
 
     // Conteo total de cruces por pasillo
     const usage = new Map();
@@ -651,6 +669,7 @@
       dynamicLevels.set(e.key, combined);
     }
 
+    tReloj = performance.now();
     const dynCaps = data.buildCapacities(dynamicLevels);
     const ekSteps = [];
     const flowRes = KF.edmondsKarpBetweenZones(
@@ -673,6 +692,8 @@
       flowRes,
       ekSteps,
       baseFlow,
+      tiempos: Object.assign(tiempos, { flujo: performance.now() - tReloj }),
+      stats: Object.assign(stats, { pico, usoEntradas: liveUsage.size }),
     };
   };
-})(window);
+})(typeof window !== "undefined" ? window : self);

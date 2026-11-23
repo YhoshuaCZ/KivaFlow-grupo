@@ -30,6 +30,9 @@
     },
     expCache: null,
     verifCache: null,
+    edicion: { frec: "Baja", unir: true, filas: 25 },
+    edicionMsg: null,
+    pasilloDesde: null,
   };
 
   let activeCleanups = [];
@@ -91,6 +94,337 @@
         <p class="page-sub">${sub}</p>
       </header>
     `;
+  }
+
+  /* =======================================================
+     Edición del grafo (vive dentro del botón «Cambiar» de Explorar y Simular)
+     ======================================================= */
+  let vistaActual = 0; // cambia en cada navegación: descarta cálculos que llegan tarde
+
+  const MODOS_EDICION = ["Ubicacion", "Pasillo"];
+
+  function mensajeEdicion(texto, tipo = "ok") {
+    STATE.edicionMsg = { texto, tipo };
+  }
+
+  function sanearPuntos() {
+    const d = KF.DATA;
+    if (!d.nodos[STATE.inicio]) STATE.inicio = "F22_C39";
+    STATE.destinos = STATE.destinos.filter((id) => d.nodos[id] && id !== STATE.inicio);
+    STATE.bloqueados = STATE.bloqueados.filter((id) => d.nodos[id]);
+    if (STATE.pasilloDesde && !d.nodos[STATE.pasilloDesde]) STATE.pasilloDesde = null;
+  }
+
+  function editorGrafoHTML(conModos) {
+    const r = KF.grafo.resumen();
+    const ed = STATE.edicion;
+    const editado = KF.grafo.editado;
+    const msg = STATE.edicionMsg;
+    STATE.edicionMsg = null;
+    return `
+      <div class="kf-editor stack" style="gap:10px">
+        <div class="row-between">
+          <div class="kf-editor-title">
+            Editar grafo
+            <span class="chip chip-nuevo">${KF.formatNum(r.V)} nodos · ${KF.formatNum(r.E)} pasillos</span>
+            ${editado ? `<span class="chip">+${KF.formatNum(r.agregadosV)} nodos · +${KF.formatNum(r.agregadosE)} pasillos</span>` : `<span class="chip">dataset original</span>`}
+          </div>
+          <div class="row" style="gap:6px">
+            <button type="button" data-ed="deshacer" class="btn btn-sm" ${editado ? "" : "disabled"} title="Deshacer el último cambio (Ctrl+Z)">↶ Deshacer</button>
+            <button type="button" data-ed="restablecer" class="btn btn-sm" ${editado ? "" : "disabled"} title="Quitar todos los cambios y volver al dataset de 1 800 nodos">Restablecer dataset</button>
+          </div>
+        </div>
+        ${conModos
+        ? `<div class="control-group">
+            <span class="control-label">El clic en el mapa</span>
+            <div class="segmented" data-seg="modo-ed">
+              <button type="button" data-val="Ver" class="${MODOS_EDICION.includes(STATE.clickModo) ? "" : "active"}">Solo ver</button>
+              <button type="button" data-val="Ubicacion" class="seg-nuevo ${STATE.clickModo === "Ubicacion" ? "active" : ""}">+ Ubicación</button>
+              <button type="button" data-val="Pasillo" class="seg-nuevo ${STATE.clickModo === "Pasillo" ? "active" : ""}">+ Pasillo</button>
+            </div>
+          </div>`
+        : ""
+      }
+        <div class="row" style="align-items:flex-end">
+          <div class="control-group">
+            <span class="control-label">Congestión del pasillo nuevo</span>
+            <select data-ed="frec" class="select">
+              ${["Baja", "Media", "Alta"].map((f) => `<option value="${f}" ${ed.frec === f ? "selected" : ""}>${f} (capacidad ${KF.CAPACIDAD[f]})</option>`).join("")}
+            </select>
+          </div>
+          <label class="toggle-wrap" style="padding-bottom:8px">
+            <input type="checkbox" data-ed="unir" ${ed.unir ? "checked" : ""} />
+            Unir cada ubicación nueva con la más cercana
+          </label>
+          <div class="control-group">
+            <span class="control-label">Ampliar el almacén (filas al final)</span>
+            <div class="row" style="gap:6px">
+              <select data-ed="filas" class="select">
+                ${[5, 25, 125].map((k) => `<option value="${k}" ${ed.filas === k ? "selected" : ""}>+${k} filas (${KF.formatNum(k * 40)} nodos)</option>`).join("")}
+              </select>
+              <button type="button" data-ed="ampliar" class="btn">Ampliar</button>
+            </div>
+          </div>
+          <button type="button" data-ed="csv" class="btn btn-sm" title="Descarga nodos y aristas con las mismas columnas del dataset">Exportar CSV</button>
+        </div>
+        <div class="kf-progress" data-ed="prog" hidden><span></span></div>
+        <div class="kf-msg ${msg ? msg.tipo : ""}" data-ed="msg" role="status" aria-live="polite" ${msg ? "" : "hidden"}>${msg ? KF.escapeHtml(msg.texto) : ""}</div>
+        <p class="kf-hint">
+          <strong>+ Ubicación</strong>: clic en un espacio libre entre ubicaciones. <strong>+ Pasillo</strong>: clic en dos ubicaciones.
+          <kbd>Esc</kbd> cancela el pasillo a medias · <kbd>Ctrl</kbd>+<kbd>Z</kbd> deshace.
+          Memoria del grafo ≈ ${KF.formatBytes(r.memoria)} · almacenamiento en CSV ≈ ${KF.formatBytes(r.almacenamiento)}.
+        </p>
+      </div>
+    `;
+  }
+
+  /** Conecta los controles del editor. `alCambiar` vuelve a dibujar la vista con el grafo nuevo. */
+  function bindEditorGrafo(container, alCambiar, mapa) {
+    const ed = STATE.edicion;
+    const msgEl = container.querySelector('[data-ed="msg"]');
+    const decir = (texto, tipo = "ok") => {
+      if (!msgEl) return;
+      msgEl.textContent = texto;
+      msgEl.className = `kf-msg ${tipo}`;
+      msgEl.hidden = false;
+    };
+    const tras = (texto, tipo) => {
+      if (texto) mensajeEdicion(texto, tipo);
+      sanearPuntos();
+      alCambiar();
+    };
+
+    container.querySelector('[data-ed="frec"]').addEventListener("change", (ev) => (ed.frec = ev.target.value));
+    container.querySelector('[data-ed="unir"]').addEventListener("change", (ev) => (ed.unir = ev.target.checked));
+    container.querySelector('[data-ed="filas"]').addEventListener("change", (ev) => (ed.filas = parseInt(ev.target.value, 10)));
+
+    container.querySelectorAll('[data-seg="modo-ed"] button').forEach((btn) => {
+      btn.addEventListener("click", () => {
+        STATE.clickModo = btn.dataset.val === "Ver" ? "Inicio" : btn.dataset.val;
+        STATE.pasilloDesde = null;
+        container.querySelectorAll('[data-seg="modo-ed"] button').forEach((b) => b.classList.toggle("active", b === btn));
+        if (btn.dataset.val === "Ubicacion") decir("Haz clic en un espacio libre del mapa para crear la ubicación.", "");
+        else if (btn.dataset.val === "Pasillo") decir("Haz clic en la primera ubicación del pasillo.", "");
+        if (mapa) mapa.render(Object.assign({}, mapa._lastOverlay, { seleccion: null }));
+      });
+    });
+
+    container.querySelector('[data-ed="deshacer"]').addEventListener("click", () => {
+      const op = KF.grafo.deshacer();
+      if (op) tras(`Se deshizo: ${describirCambio(op)}.`, "ok");
+    });
+
+    container.querySelector('[data-ed="restablecer"]').addEventListener("click", () => {
+      const n = KF.grafo.cambios.length;
+      if (!window.confirm(`¿Quitar ${n} cambio${n === 1 ? "" : "s"} y volver al dataset original de 1 800 nodos y 3 515 pasillos?`)) return;
+      KF.grafo.restablecer();
+      tras("Se restableció el dataset original.", "ok");
+    });
+
+    container.querySelector('[data-ed="ampliar"]').addEventListener("click", async (ev) => {
+      const k = ed.filas;
+      const btn = ev.currentTarget;
+      const prog = container.querySelector('[data-ed="prog"]');
+      btn.disabled = true;
+      btn.textContent = "Ampliando…";
+      prog.hidden = false;
+      const vista = vistaActual;
+      const t0 = performance.now();
+      await KF.grafo.ampliar(k, (h, total) => {
+        prog.firstElementChild.style.width = `${(100 * h) / total}%`;
+        decir(`Agregando fila ${h} de ${total}… la página sigue respondiendo.`, "");
+      });
+      const ms = performance.now() - t0;
+      if (vista !== vistaActual) return;
+      tras(`Se agregaron ${k} filas (${KF.formatNum(k * 40)} nodos) en ${KF.formatMs(ms)}, por partes de ~8 ms para no congelar la página.`, "ok");
+    });
+
+    container.querySelector('[data-ed="csv"]').addEventListener("click", () => {
+      const { nodos, aristas } = KF.grafo.aCSV();
+      for (const [nombre, texto] of [["nodos_editado.csv", nodos], ["aristas_editado.csv", aristas]]) {
+        const url = URL.createObjectURL(new Blob(["﻿" + texto], { type: "text/csv;charset=utf-8" }));
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = nombre;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      decir(`Se descargaron nodos_editado.csv y aristas_editado.csv (${KF.formatBytes(nodos.length + aristas.length)}).`, "ok");
+    });
+
+    // Atajos: Esc cancela el pasillo a medias, Ctrl+Z deshace.
+    const teclas = (ev) => {
+      const tag = (ev.target && ev.target.tagName) || "";
+      if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
+      if (ev.key === "Escape" && STATE.pasilloDesde) {
+        STATE.pasilloDesde = null;
+        decir("Pasillo cancelado.", "");
+        if (mapa) mapa.render(Object.assign({}, mapa._lastOverlay, { seleccion: null }));
+      } else if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z" && KF.grafo.editado) {
+        ev.preventDefault();
+        const op = KF.grafo.deshacer();
+        if (op) tras(`Se deshizo: ${describirCambio(op)}.`, "ok");
+      }
+    };
+    document.addEventListener("keydown", teclas);
+    registerCleanup(() => document.removeEventListener("keydown", teclas));
+
+    return { decir, tras };
+  }
+
+  /** Recuerda si el panel «Cambiar» quedó abierto, para no cerrarlo en cada cambio. */
+  function vigilarDetalles(el) {
+    el.querySelectorAll("details.kf-details").forEach((d) => {
+      d.addEventListener("toggle", () => (STATE.cambiarAbierto = d.open));
+    });
+  }
+
+  function describirCambio(op) {
+    if (op.t === "n") return `ubicación ${op.id}${op.unir ? ` y su pasillo a ${op.unir}` : ""}`;
+    if (op.t === "e") return `pasillo ${op.u} – ${op.v}`;
+    return `ampliación de ${op.k} filas`;
+  }
+
+  /** Clic en el mapa cuando el modo es de edición. Devuelve true si lo atendió. */
+  function clicEdicion(p, exacto, cercano, ctl, mapa) {
+    const ed = STATE.edicion;
+    if (STATE.clickModo === "Ubicacion") {
+      if (!p) return true;
+      const r = KF.grafo.agregarUbicacion(p.fila, p.col, ed.frec, ed.unir);
+      if (r.error) {
+        ctl.decir(r.error, "error");
+        return true;
+      }
+      ctl.tras(
+        `Se agregó ${r.nodo.id} (fila ${r.nodo.fila}, columna ${r.nodo.col}, ${r.nodo.zona})` +
+        (r.vecino ? ` unida a ${r.vecino.id} con un pasillo de ${r.arista.dist} m.` : ". Aún no tiene pasillos: agrégale uno con «+ Pasillo».")
+      );
+      return true;
+    }
+    if (STATE.clickModo === "Pasillo") {
+      if (!cercano) {
+        ctl.decir("Haz clic sobre una ubicación (un punto del mapa).", "error");
+        return true;
+      }
+      if (!STATE.pasilloDesde) {
+        STATE.pasilloDesde = cercano.id;
+        ctl.decir(`Primer extremo: ${cercano.id}. Ahora haz clic en la segunda ubicación (Esc cancela).`, "");
+        mapa.render(Object.assign({}, mapa._lastOverlay, { seleccion: cercano.id }));
+        return true;
+      }
+      const desde = STATE.pasilloDesde;
+      STATE.pasilloDesde = null;
+      const r = KF.grafo.agregarPasillo(desde, cercano.id, ed.frec);
+      if (r.error) {
+        ctl.decir(r.error, "error");
+        mapa.render(Object.assign({}, mapa._lastOverlay, { seleccion: null }));
+        return true;
+      }
+      ctl.tras(`Se agregó el pasillo ${desde} – ${cercano.id} (${r.arista.dist} m, congestión ${r.arista.frec}).`);
+      return true;
+    }
+    return false;
+  }
+
+  /** Editor con su propio mapa (Edmonds-Karp en Explorar y el turno de Simular, que no tienen selector de puntos). */
+  function mountEditorConMapa(container, alCambiar) {
+    container.innerHTML = `
+      <div class="stack">
+        <div data-ed-box>${editorGrafoHTML(true)}</div>
+        <div class="canvas-card" style="padding:10px 12px"><div class="canvas-wrap"><canvas></canvas></div></div>
+      </div>`;
+    let ctl = null;
+    const mapa = new KF.WarehouseCanvas(container.querySelector("canvas"), KF.DATA, {
+      width: 820,
+      height: 360,
+      interactive: true,
+      onMapClick: (p, exacto, cercano) => clicEdicion(p, exacto, cercano, ctl, mapa),
+    });
+    ctl = bindEditorGrafo(container, alCambiar, mapa);
+    mapa.render({ seleccion: STATE.pasilloDesde });
+    registerCleanup(() => mapa.destroy());
+  }
+
+  /* =======================================================
+     Mediciones por algoritmo: tiempo, memoria y almacenamiento
+     ======================================================= */
+  function colorAlg(alg) {
+    if (alg === "reservas") return KF.PALETA.NUEVO;
+    return KF.PALETA.ALGORITMO[alg] || KF.PALETA.TINTA;
+  }
+
+  function tablaMediciones(lista, titulo = "Recursos que usó cada algoritmo") {
+    if (!lista || !lista.length) return "";
+    const filas = lista
+      .map(
+        (m) => `
+        <tr>
+          <td><span class="alg-dot" style="background:${colorAlg(m.alg)}"></span><strong>${m.etiqueta}</strong></td>
+          <td class="num">${KF.formatMs(m.ms)}</td>
+          <td class="num">${KF.formatBytes(m.memoria)}</td>
+          <td class="num">${KF.formatBytes(m.almacenamiento)}</td>
+          <td>${m.operaciones}</td>
+          <td class="num">${m.complejidad}</td>
+          <td>${m.hilo}</td>
+        </tr>`
+      )
+      .join("");
+    const g = lista[0];
+    return `
+      <div class="card stack" style="gap:6px">
+        <div class="row-between">
+          <strong>${titulo}</strong>
+          <span class="card-note">grafo de ${KF.formatNum(g.V)} nodos y ${KF.formatNum(g.E)} pasillos</span>
+        </div>
+        <div class="kf-medidas-wrap">
+          <table class="kf-medidas">
+            <thead><tr>
+              <th>Algoritmo</th>
+              <th title="Tiempo que tardó el algoritmo, medido con performance.now()">Tiempo</th>
+              <th title="RAM de trabajo estimada: estructuras auxiliares que crea el algoritmo (cola, padres, distancias, red residual…)">Memoria (RAM)</th>
+              <th title="Bytes para guardar como texto la estructura que lee el algoritmo más el resultado que entrega">Almacenamiento</th>
+              <th>Operaciones</th>
+              <th>Complejidad</th>
+              <th title="Dónde se ejecutó el cálculo">Dónde corrió</th>
+            </tr></thead>
+            <tbody>${filas}</tbody>
+          </table>
+        </div>
+        <p class="kf-medidas-nota">
+          <strong>Tiempo</strong>: medido con <code>performance.now()</code> (varía según la PC).
+          <strong>Memoria</strong>: estimada a partir de las estructuras auxiliares del algoritmo (≈ 56 B por entrada de Map).
+          <strong>Almacenamiento</strong>: bytes de la estructura de entrada en texto (lista de adyacencia para BFS, lista de aristas con peso para Bellman-Ford, capacidades para Edmonds-Karp) más el resultado.
+        </p>
+      </div>`;
+  }
+
+  function calculandoHTML(texto) {
+    return `
+      <div class="card row-between">
+        <div class="kf-calculando"><span class="kf-spinner" aria-hidden="true"></span><span>${texto} <span class="card-note">(${KF.motor.hilo === "Web Worker" ? "en segundo plano: puedes seguir usando la página" : "en esta pestaña"})</span></span></div>
+        <button type="button" class="btn btn-sm" data-cancelar>Cancelar</button>
+      </div>`;
+  }
+
+  /** Pide un cálculo al motor y muestra «Calculando…» mientras tanto. Devuelve null si la vista cambió o se canceló. */
+  async function calcularEn(el, texto, tarea, args) {
+    const vista = vistaActual;
+    el.innerHTML = calculandoHTML(texto);
+    el.querySelector("[data-cancelar]").addEventListener("click", () => {
+      KF.motor.cancelar();
+      el.innerHTML = `<div class="card"><strong>Cálculo cancelado.</strong> <span class="card-note">Cambia los datos o vuelve a abrir la vista para calcular de nuevo.</span></div>`;
+    });
+    try {
+      const r = await KF.motor.calcular(tarea, args);
+      return vista === vistaActual ? r : null;
+    } catch (e) {
+      if (e && e.cancelado) return null;
+      if (vista === vistaActual) {
+        el.innerHTML = `<div class="card"><strong>No se pudo calcular.</strong> <span class="card-note"></span></div>`;
+        el.querySelector(".card-note").textContent = e && e.message ? e.message : String(e);
+      }
+      return null;
+    }
   }
 
   function renderBars(title, entries, fmt, note = "menos es mejor") {
@@ -164,6 +498,8 @@
                 <button type="button" data-val="Inicio" class="${STATE.clickModo === "Inicio" ? "active" : ""}">Inicio</button>
                 <button type="button" data-val="Destino" class="${STATE.clickModo === "Destino" ? "active" : ""}">Destino</button>
                 <button type="button" data-val="Bloquear" class="${STATE.clickModo === "Bloquear" ? "active" : ""}">Bloquear </button>
+                <button type="button" data-val="Ubicacion" class="seg-nuevo ${STATE.clickModo === "Ubicacion" ? "active" : ""}" title="Agregar una ubicación (nodo) al grafo">+ Ubicación</button>
+                <button type="button" data-val="Pasillo" class="seg-nuevo ${STATE.clickModo === "Pasillo" ? "active" : ""}" title="Agregar un pasillo (arista) entre dos ubicaciones">+ Pasillo</button>
               </div>
             </div>
 
@@ -207,6 +543,8 @@
         </div>
         <div id="sel-sku-msg" class="card-note" aria-live="polite" hidden></div>
 
+        <div data-ed-box>${editorGrafoHTML(false)}</div>
+
         <div class="canvas-card" style="padding:10px 12px">
           <div class="canvas-wrap"><canvas id="sel-canvas"></canvas></div>
         </div>
@@ -233,10 +571,12 @@
     `;
 
     const canvasEl = container.querySelector("#sel-canvas");
+    let ctlEd = null;
     const map = new KF.WarehouseCanvas(canvasEl, data, {
       width: 820,
       height: 360,
       interactive: true,
+      onMapClick: (p, exacto, cercano) => clicEdicion(p, exacto, cercano, ctlEd, map),
       onNodeClick: (nodeId) => {
         if (STATE.clickModo === "Inicio") {
           STATE.inicio = nodeId;
@@ -259,7 +599,8 @@
         onChange();
       },
     });
-    map.render({ start: STATE.inicio, destinations: STATE.destinos, blockedList: STATE.bloqueados });
+    ctlEd = bindEditorGrafo(container, onChange, map);
+    map.render({ start: STATE.inicio, destinations: STATE.destinos, blockedList: STATE.bloqueados, seleccion: STATE.pasilloDesde });
     registerCleanup(() => map.destroy());
 
     container.querySelectorAll(".chip-remove[data-rm]").forEach((btn) => {
@@ -296,9 +637,13 @@
     container.querySelectorAll('[data-seg="modo"] button').forEach((btn) => {
       btn.addEventListener("click", () => {
         STATE.clickModo = btn.dataset.val;
+        STATE.pasilloDesde = null;
         container
           .querySelectorAll('[data-seg="modo"] button')
           .forEach((b) => b.classList.toggle("active", b === btn));
+        if (STATE.clickModo === "Ubicacion") ctlEd.decir("Haz clic en un espacio libre del mapa para crear la ubicación.", "");
+        else if (STATE.clickModo === "Pasillo") ctlEd.decir("Haz clic en la primera ubicación del pasillo.", "");
+        map.render(Object.assign({}, map._lastOverlay, { seleccion: null }));
       });
     });
 
@@ -697,6 +1042,8 @@
             <div class="pseudo-stats" id="exp-stats"></div>
           </div>
         </div>
+
+        <div id="exp-medidas" aria-live="polite"></div>
       </div>
     `;
 
@@ -754,7 +1101,13 @@
             (capacidad por pasillo según congestión: Baja = 3, Media = 2, Alta = 1) y marca los pasillos saturados del corte mínimo.
           </p>
         </div>
+        <details class="kf-details" style="margin-top:12px" ${STATE.cambiarAbierto ? "open" : ""}>
+          <summary><span>Grafo: <strong>${KF.formatNum(data.nodeList.length)}</strong> nodos · <strong>${KF.formatNum(data.aristas.length)}</strong> pasillos${KF.grafo.editado ? " (editado)" : ""} — agrega ubicaciones, pasillos o filas</span></summary>
+          <div id="ek-editor"></div>
+        </details>
       `;
+      vigilarDetalles(configEl);
+      mountEditorConMapa(configEl.querySelector("#ek-editor"), () => navigate("explorar"));
 
       configEl.querySelector("#ek-origen").addEventListener("change", (ev) => {
         STATE.ekOrigen = ev.target.value;
@@ -765,9 +1118,12 @@
         navigate("explorar");
       });
 
-      const caps = data.buildCapacities(null);
-      const ekSteps = [];
-      const res = KF.edmondsKarpBetweenZones(caps, data.nodos, STATE.ekOrigen, STATE.ekDestino, ekSteps);
+      titleEl.textContent = `Edmonds-Karp · ${STATE.ekOrigen} → ${STATE.ekDestino}`;
+      const medEl = main.querySelector("#exp-medidas");
+      calcularEn(medEl, "Calculando Edmonds-Karp…", "flujo", { origen: STATE.ekOrigen, destino: STATE.ekDestino }).then((res) => {
+      if (!res) return;
+      medEl.innerHTML = tablaMediciones([res.medicion]);
+      const ekSteps = res.pasos;
 
       // Construir cuadros acumulativos
       const flowFrames = [];
@@ -847,16 +1203,18 @@
         ctrl.destroy();
         canvas.destroy();
       });
+      });
       return;
     }
 
     // BFS o Bellman-Ford
     configEl.innerHTML = `
-      <details class="kf-details">
-        <summary>Puntos: inicio <strong>${STATE.inicio}</strong> · ${STATE.destinos.length} destinos · hora ${STATE.perfil}</summary>
+      <details class="kf-details" ${STATE.cambiarAbierto ? "open" : ""}>
+        <summary><span>Puntos: inicio <strong>${STATE.inicio}</strong> · ${STATE.destinos.length} destinos · hora ${STATE.perfil} · grafo de ${KF.formatNum(data.nodeList.length)} nodos${KF.grafo.editado ? " (editado)" : ""}</span></summary>
         <div id="exp-selector-inner"></div>
       </details>
     `;
+    vigilarDetalles(configEl);
     mountPointSelector(configEl.querySelector("#exp-selector-inner"), data, () => navigate("explorar"));
 
     if (!STATE.inicio || STATE.destinos.length === 0) {
@@ -864,19 +1222,22 @@
       return;
     }
 
-    const blockedSet = new Set(STATE.bloqueados);
-    const r = KF.rutaPedido(
-      data,
-      STATE.perfil,
-      STATE.inicio,
-      STATE.destinos,
-      STATE.exploreAlg,
-      true,
-      STATE.regresar,
-      blockedSet
-    );
-    const frames = KF.buildSearchFrames(r.segments, STATE.exploreAlg, data, 180);
-    const met = KF.medirRuta(r.path, data.edgeMap, STATE.perfil);
+    const medEl = main.querySelector("#exp-medidas");
+    calcularEn(medEl, `Calculando ${KF.NOMBRE[STATE.exploreAlg]}…`, "pedido", {
+      algs: [STATE.exploreAlg],
+      perfil: STATE.perfil,
+      inicio: STATE.inicio,
+      destinos: STATE.destinos,
+      regresar: STATE.regresar,
+      bloqueados: STATE.bloqueados,
+      maxFrames: 180,
+    }).then((salida) => {
+    if (!salida) return;
+    const out = salida[STATE.exploreAlg];
+    medEl.innerHTML = tablaMediciones([out.medicion]);
+    const r = out.r;
+    const frames = KF.hidratarCuadros(out.frames);
+    const met = out.m;
 
     const orderedDests =
       r.order && r.order.length === STATE.destinos.length ? r.order : STATE.destinos;
@@ -935,6 +1296,7 @@
     registerCleanup(() => {
       ctrl.destroy();
       canvas.destroy();
+    });
     });
   }
 
@@ -1015,16 +1377,17 @@
       return;
     }
 
-    const blockedSet = new Set(STATE.bloqueados);
-    const results = {};
-    for (const alg of ["bfs", "bellman_ford"]) {
-      const t0 = performance.now();
-      const r = KF.rutaPedido(data, STATE.perfil, STATE.inicio, STATE.destinos, alg, true, STATE.regresar, blockedSet);
-      const ms = performance.now() - t0;
-      const m = KF.medirRuta(r.path, data.edgeMap, STATE.perfil);
-      const frames = KF.buildSearchFrames(r.segments, alg, data, 120);
-      results[alg] = { r, m, ms, frames, work: frames[frames.length - 1].work };
-    }
+    calcularEn(resEl, "Calculando BFS y Bellman-Ford…", "pedido", {
+      algs: ["bfs", "bellman_ford"],
+      perfil: STATE.perfil,
+      inicio: STATE.inicio,
+      destinos: STATE.destinos,
+      regresar: STATE.regresar,
+      bloqueados: STATE.bloqueados,
+      maxFrames: 120,
+    }).then((results) => {
+    if (!results) return;
+    for (const alg of ["bfs", "bellman_ford"]) results[alg].frames = KF.hidratarCuadros(results[alg].frames);
 
     const b = results.bfs;
     const f = results.bellman_ford;
@@ -1166,6 +1529,8 @@
           </div>
           <div class="conclusion-box">${conclusion}</div>
         </div>
+
+        ${tablaMediciones([b.medicion, f.medicion], "Recursos que usó cada algoritmo en este pedido")}
       </div>
     `;
 
@@ -1264,6 +1629,7 @@
       ctrl.destroy();
       cBfs.destroy();
       cBf.destroy();
+    });
     });
   }
 
@@ -1381,9 +1747,20 @@
           </div>
         </div>
 
+        <details class="kf-details" ${STATE.cambiarAbierto ? "open" : ""}>
+          <summary><span>Grafo: <strong>${KF.formatNum(data.nodeList.length)}</strong> nodos · <strong>${KF.formatNum(data.aristas.length)}</strong> pasillos${KF.grafo.editado ? " (editado)" : ""} — agrega ubicaciones, pasillos o filas</span></summary>
+          <div id="sim-editor"></div>
+        </details>
+
         <div id="sim-output"></div>
       </div>
     `;
+    vigilarDetalles(main);
+    mountEditorConMapa(main.querySelector("#sim-editor"), () => {
+      s.result = null;
+      s.resultCmp = null;
+      navigate("simular");
+    });
 
     main.querySelectorAll("#sim-modo button").forEach((b) => {
       b.addEventListener("click", () => {
@@ -1450,46 +1827,32 @@
 
     const outEl = main.querySelector("#sim-output");
 
-    function runAndShow() {
-      outEl.innerHTML = renderSkeletonBlock(4, false);
-      setTimeout(() => {
-        if (s.modo === "comparar") {
-          if (s.algB === s.algA) {
-            s.algB = Object.keys(modelos).find((k) => k !== s.algA) || "bellman_ford";
-          }
-          const rA = KF.simularTurno(data, {
-            alg: s.algA,
-            nOps: s.nOps,
-            maxProd: s.maxProd,
-            hora: s.hora,
-            zonaOrigen: s.zOrigen,
-            zonaDestino: s.zDestino,
-            semilla: s.semilla,
-          });
-          const rB = KF.simularTurno(data, {
-            alg: s.algB,
-            nOps: s.nOps,
-            maxProd: s.maxProd,
-            hora: s.hora,
-            zonaOrigen: s.zOrigen,
-            zonaDestino: s.zDestino,
-            semilla: s.semilla,
-          });
-          s.resultCmp = { rA, rB };
-          renderSimCompareResult(outEl, data, s, modelos);
-        } else {
-          s.result = KF.simularTurno(data, {
-            alg: s.alg,
-            nOps: s.nOps,
-            maxProd: s.maxProd,
-            hora: s.hora,
-            zonaOrigen: s.zOrigen,
-            zonaDestino: s.zDestino,
-            semilla: s.semilla,
-          });
-          renderSimResult(outEl, data, s);
+    async function runAndShow() {
+      const opcion = (alg) => ({
+        alg,
+        nOps: s.nOps,
+        maxProd: s.maxProd,
+        hora: s.hora,
+        zonaOrigen: s.zOrigen,
+        zonaDestino: s.zDestino,
+        semilla: s.semilla,
+      });
+      if (s.modo === "comparar") {
+        if (s.algB === s.algA) {
+          s.algB = Object.keys(modelos).find((k) => k !== s.algA) || "bellman_ford";
         }
-      }, 60);
+        const rA = await calcularEn(outEl, `Simulando el turno con ${KF.NOMBRE[s.algA]} (1 de 2)…`, "turno", opcion(s.algA));
+        if (!rA) return;
+        const rB = await calcularEn(outEl, `Simulando el turno con ${KF.NOMBRE[s.algB]} (2 de 2)…`, "turno", opcion(s.algB));
+        if (!rB) return;
+        s.resultCmp = { rA, rB };
+        renderSimCompareResult(outEl, data, s, modelos);
+      } else {
+        const r = await calcularEn(outEl, `Simulando el turno con ${KF.NOMBRE[s.alg]}…`, "turno", opcion(s.alg));
+        if (!r) return;
+        s.result = r;
+        renderSimResult(outEl, data, s);
+      }
     }
 
     main.querySelector("#sim-run").addEventListener("click", runAndShow);
@@ -1501,6 +1864,135 @@
     } else {
       runAndShow();
     }
+  }
+
+  /* =======================================================
+     Turno: cómo se evitan los operarios
+     ======================================================= */
+  const EXPLICA_MODELO = {
+    bfs: "BFS no mira el tráfico al planificar: cada operario toma la ruta con menos pasillos aunque otros ya la usen. Los choques se evitan solo al caminar, con la tabla de reservas.",
+    bellman_ford: "Bellman-Ford encarece un 12 % cada pasillo por cada operario que ya lo planificó, así que los siguientes buscan pasillos menos usados. Además, al caminar se respeta la tabla de reservas.",
+    edmonds_karp: "Primero Edmonds-Karp halla el corte mínimo; esos pasillos cuestan ×1,45 y cada cruce previo suma un 28 %. Las rutas se reparten lejos de los cuellos de botella y, al caminar, se respeta la tabla de reservas.",
+  };
+
+  function textoEvento(ev) {
+    if (ev.tipo === "espera") return `Op ${ev.op} espera en <strong>${ev.nodo}</strong>: ${ev.hacia} está ocupada por Op ${ev.otro}`;
+    if (ev.tipo === "cede") return `Op ${ev.op} se hace a un lado a <strong>${ev.nodo}</strong> para dejar pasar a Op ${ev.otro}`;
+    return `Op ${ev.op} y Op ${ev.otro} coinciden en <strong>${ev.nodo}</strong> (no había ubicación libre al lado)`;
+  }
+
+  const ETIQUETA_EVENTO = { espera: "espera", cede: "cede el paso", conflicto: "sin resolver" };
+
+  /** Posición de cada operario en el paso t, con halo si está esperando o cediendo el paso. */
+  function estadoTurno(r, t, color) {
+    const partialUsage = new Map();
+    const workers = [];
+    let active = 0;
+    const eventosAhora = new Map();
+    for (const ev of r.colisiones.eventos) if (ev.t === t) eventosAhora.set(ev.op, ev);
+    for (const op of r.operators) {
+      const camino = op.timed || op.path;
+      const lim = Math.min(t, camino.length - 1);
+      if (t < camino.length - 1) active++;
+      const ev = eventosAhora.get(op.id);
+      workers.push({
+        node: camino[lim],
+        color,
+        radius: 4.6,
+        halo: ev ? (ev.tipo === "espera" ? KF.PALETA.FRENTE : ev.tipo === "cede" ? KF.PALETA.NUEVO : KF.PALETA.AVERIA) : null,
+        etiqueta: ev ? String(op.id) : null,
+      });
+      for (let i = 0; i < lim; i++) {
+        if (camino[i] === camino[i + 1]) continue;
+        const k = KF.edgeKey(camino[i], camino[i + 1]);
+        partialUsage.set(k, (partialUsage.get(k) || 0) + 1);
+      }
+    }
+    return { partialUsage, workers, active, eventosAhora };
+  }
+
+  function panelColisionesHTML(r, alg, pref, titulo) {
+    const c = r.colisiones;
+    const compartidos = r.operators.reduce((a, o) => a + (o.compartidos || 0), 0);
+    const filas = r.operators
+      .map(
+        (o) => `<tr>
+          <td><strong>Op ${o.id}</strong></td>
+          <td class="num">${o.muelle}</td>
+          <td class="num">${o.racks.length}</td>
+          <td class="num">${o.path.length - 1}</td>
+          <td class="num">${o.esperas || 0}</td>
+          <td class="num">${o.cesiones || 0}</td>
+          <td class="num">${o.compartidos || 0}</td>
+          <td class="num">${o.tiempoS} s</td>
+        </tr>`
+      )
+      .join("");
+    return `
+      <div class="card stack" style="gap:14px">
+        <div class="row-between">
+          <strong>Cómo se evitan los operarios · ${titulo || KF.NOMBRE[alg]}</strong>
+          <span class="chip" id="${pref}-col-chip">paso 1</span>
+        </div>
+        <p class="card-note" style="margin:0">
+          <strong>1. Al planificar:</strong> ${EXPLICA_MODELO[alg]}
+          <br /><strong>2. Al caminar:</strong> una <em>tabla de reservas</em> guarda qué operario ocupa cada ubicación en cada paso
+          (clave «ubicación@paso», consulta O(1)). Cada operario respeta las reservas de los anteriores: si la siguiente ubicación está ocupada
+          <span class="kf-tag espera">espera</span>; si alguien viene justo hacia su sitio <span class="kf-tag cede">cede el paso</span> a una ubicación vecina libre.
+          Las estaciones de trabajo son áreas amplias y ahí sí pueden coincidir.
+        </p>
+        <div class="mini-metrics">
+          <div class="mini-metric"><div class="card-label">Choques evitados</div><div class="card-num">${c.esperas + c.cesiones}</div></div>
+          <div class="mini-metric"><div class="card-label">Esperas</div><div class="card-num">${c.esperas}</div></div>
+          <div class="mini-metric"><div class="card-label">Cedió el paso</div><div class="card-num">${c.cesiones}</div></div>
+          <div class="mini-metric"><div class="card-label">Sin resolver</div><div class="card-num">${c.sinResolver}</div></div>
+          <div class="mini-metric"><div class="card-label">Pasillos compartidos al planificar</div><div class="card-num">${compartidos}</div></div>
+        </div>
+        <div class="grid-2" style="gap:18px">
+          <div class="stack" style="gap:6px">
+            <strong style="font-size:14px">Registro en vivo (sigue a la animación)</strong>
+            <ul class="kf-eventos" id="${pref}-col-log" aria-live="off"></ul>
+          </div>
+          <div class="stack" style="gap:6px">
+            <strong style="font-size:14px">Por operario</strong>
+            <div class="kf-medidas-wrap" style="max-height:236px;overflow-y:auto">
+              <table class="kf-medidas">
+                <thead><tr>
+                  <th>Operario</th><th>Muelle</th><th>Productos</th><th>Pasillos</th>
+                  <th title="Pasos que esperó para no chocar">Esperas</th>
+                  <th title="Veces que se hizo a un lado para dejar pasar a otro">Cedió</th>
+                  <th title="Pasillos de su ruta que otro operario ya había planificado">Compartidos</th>
+                  <th>Caminata</th>
+                </tr></thead>
+                <tbody>${filas}</tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function pintarEventos(outEl, r, t, pref) {
+    const log = outEl.querySelector(`#${pref}-col-log`);
+    const chip = outEl.querySelector(`#${pref}-col-chip`);
+    if (!log) return;
+    const hasta = [];
+    for (const ev of r.colisiones.eventos) {
+      if (ev.t > t) break;
+      hasta.push(ev);
+    }
+    if (chip) chip.textContent = `paso ${t + 1} · ${hasta.length} de ${r.colisiones.eventos.length} eventos`;
+    if (!hasta.length) {
+      log.innerHTML = `<li><span class="card-note">${r.colisiones.eventos.length ? "Todavía nadie se ha cruzado." : "En este turno ningún operario tuvo que esperar ni ceder el paso."}</span></li>`;
+      return;
+    }
+    log.innerHTML = hasta
+      .slice(-40)
+      .reverse()
+      .map(
+        (ev) => `<li class="${ev.t === t ? "actual" : ""}"><span class="t">paso ${ev.t}</span><span class="kf-tag ${ev.tipo}">${ETIQUETA_EVENTO[ev.tipo]}</span><span>${textoEvento(ev)}</span></li>`
+      )
+      .join("");
   }
 
   function renderSimCompareResult(outEl, data, s, modelos) {
@@ -1603,6 +2095,16 @@
         <div class="card stack" style="gap:14px">
           <div class="conclusion-box">${conclusion}</div>
         </div>
+
+        ${panelColisionesHTML(rA, s.algA, "ca", `Modelo A · ${nameA}`)}
+        ${panelColisionesHTML(rB, s.algB, "cb", `Modelo B · ${nameB}`)}
+
+        ${tablaMediciones(
+          rA.mediciones.map((m) => Object.assign({}, m, { etiqueta: `A · ${m.etiqueta}` })).concat(
+            rB.mediciones.map((m) => Object.assign({}, m, { etiqueta: `B · ${m.etiqueta}` }))
+          ),
+          "Recursos que usó cada algoritmo en el turno"
+        )}
       </div>
     `;
 
@@ -1625,21 +2127,7 @@
     const totalSteps = Math.max(2, rA.maxStep, rB.maxStep);
     const globalMaxUsage = Math.max(1, rA.maxUsage, rB.maxUsage);
 
-    function partialTurnState(res, t, col) {
-      const partialUsage = new Map();
-      const workers = [];
-      let active = 0;
-      for (const op of res.operators) {
-        const lim = Math.min(t, op.path.length - 1);
-        if (t < op.path.length - 1) active++;
-        workers.push({ node: op.path[lim], color: col, radius: 4.8 });
-        for (let i = 0; i < lim; i++) {
-          const k = KF.edgeKey(op.path[i], op.path[i + 1]);
-          partialUsage.set(k, (partialUsage.get(k) || 0) + 1);
-        }
-      }
-      return { partialUsage, workers, active };
-    }
+    const partialTurnState = (res, t, col) => estadoTurno(res, t, col);
 
     const ctrl = new KF.PlaybackController(
       outEl.querySelector("#sim-cmp-ctrl"),
@@ -1655,6 +2143,8 @@
         }
         const pA = partialTurnState(rA, t, colorA);
         const pB = partialTurnState(rB, t, colorB);
+        pintarEventos(outEl, rA, t, "ca");
+        pintarEventos(outEl, rB, t, "cb");
         stA.textContent = pA.active === 0 ? `completado ✓ (${pA.partialUsage.size} pasillos)` : `${pA.active} en ruta · ${pA.partialUsage.size} pasillos`;
         stB.textContent = pB.active === 0 ? `completado ✓ (${pB.partialUsage.size} pasillos)` : `${pB.active} en ruta · ${pB.partialUsage.size} pasillos`;
         cA.render({ usageMap: pA.partialUsage, maxUsage: globalMaxUsage, workers: pA.workers });
@@ -1779,6 +2269,8 @@
               <div class="canvas-wrap"><canvas id="sim-turn-canvas"></canvas></div>
               ${renderLegend([
       { dot: true, color: KF.PALETA.TINTA, label: "Operario activo" },
+      { dot: true, color: KF.PALETA.FRENTE, label: "Esperando (halo)" },
+      { dot: true, color: KF.PALETA.NUEVO, label: "Cede el paso (halo)" },
       { color: KF.PALETA.ALGORITMO.bfs, label: "Tráfico bajo" },
       { color: KF.PALETA.CONGESTION.Alta, label: "Tráfico medio" },
       { color: KF.PALETA.ALGORITMO.edmonds_karp, label: "Tráfico alto" },
@@ -1818,6 +2310,10 @@
           </div>
           <div class="conclusion-box">${simConclusion}</div>
         </div>
+
+        ${panelColisionesHTML(r, s.alg, "c1")}
+
+        ${tablaMediciones(r.mediciones, "Recursos que usó cada algoritmo en el turno")}
       </div>
     `;
 
@@ -1841,18 +2337,11 @@
       outEl.querySelector("#sim-turn-ctrl"),
       totalSteps,
       (t) => {
-        const partialUsage = new Map();
-        const workers = [];
-        let activeCount = 0;
-        for (const op of r.operators) {
-          const lim = Math.min(t, op.path.length - 1);
-          if (t < op.path.length - 1) activeCount++;
-          workers.push({ node: op.path[lim], color: KF.PALETA.TINTA, radius: 4.6 });
-          for (let i = 0; i < lim; i++) {
-            const k = KF.edgeKey(op.path[i], op.path[i + 1]);
-            partialUsage.set(k, (partialUsage.get(k) || 0) + 1);
-          }
-        }
+        const est = estadoTurno(r, t, KF.PALETA.TINTA);
+        const partialUsage = est.partialUsage;
+        const workers = est.workers;
+        const activeCount = est.active;
+        pintarEventos(outEl, r, t, "c1");
 
         // Sincronizar cuadro de Edmonds-Karp con el avance del turno
         const ekIdx = Math.min(
@@ -2643,7 +3132,6 @@
     explorar: renderExplorar,
     comparar: renderUnifiedSimular,
     simular: renderUnifiedSimular,
-    editar: (main, data) => KF.renderEditar(main, data, { pageHeader, registerCleanup }),
     resultados: renderResultados,
     verificar: renderVerificar,
     acerca: renderAcerca,
@@ -2661,6 +3149,7 @@
     }
 
     runCleanups();
+    vistaActual++;
     saveSessionState();
     document.querySelectorAll(".nav-link").forEach((a) => {
       const isActive = a.dataset.nav === page;
@@ -2748,6 +3237,19 @@
 
     try {
       await KF.loadDataset();
+      const recuperados = KF.grafo.restaurar();
+      if (recuperados) mensajeEdicion(`Se recuperaron ${recuperados} cambio${recuperados === 1 ? "" : "s"} del grafo guardados en este navegador. Usa «Restablecer dataset» para volver al original.`, "");
+      KF.motor.iniciar();
+      const pintarEstado = () => {
+        const r = KF.grafo.resumen();
+        const meta = document.getElementById("kf-status-meta");
+        const txt = `${KF.formatNum(r.V)} nodos · ${KF.formatNum(r.E)} aristas${KF.grafo.editado ? " (editado)" : ""}`;
+        if (meta) meta.textContent = txt;
+        const card = document.querySelector(".sidebar-footer .status-card");
+        if (card) card.title = `Grafo cargado: ${txt}. Cálculos en ${KF.motor.hilo}.`;
+      };
+      KF.grafo.alCambiar(pintarEstado);
+      pintarEstado();
       restoreSessionState(KF.DATA);
       const initial = (location.hash || "#inicio").replace("#", "");
       navigate(ROUTES[initial] ? initial : "inicio");

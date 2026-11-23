@@ -25,9 +25,17 @@
           focusZone: null,
           interactive: false,
           onNodeClick: null,
+          onMapClick: null,
         },
         opts
       );
+
+      // Si el almacén se amplió con filas nuevas, el mapa crece hacia abajo (hasta el doble)
+      // para que las filas no se aplasten.
+      if (data.rows > 45) {
+        const util = this.opts.height - this.opts.padTop - this.opts.padBottom;
+        this.opts.height = Math.round(this.opts.padTop + this.opts.padBottom + (util * Math.min(data.rows, 90)) / 45);
+      }
 
       this.aspect = this.opts.width / this.opts.height;
       this.canvas.style.aspectRatio = `${this.opts.width} / ${this.opts.height}`;
@@ -35,7 +43,7 @@
       if (!this.canvas.getAttribute("aria-label")) {
         this.canvas.setAttribute(
           "aria-label",
-          "Mapa interactivo del almacén KivaFlow de 45 filas por 40 columnas (1 800 ubicaciones y 3 515 pasillos)"
+          `Mapa interactivo del almacén KivaFlow de ${data.rows} filas por ${data.cols} columnas (${KF.formatNum(data.nodeList.length)} ubicaciones y ${KF.formatNum(data.aristas.length)} pasillos)`
         );
       }
 
@@ -179,6 +187,31 @@
         }
       }
       ctx.globalAlpha = 1;
+
+      // Ubicaciones y pasillos agregados a mano: se resaltan para distinguirlos del dataset.
+      // (Las filas de ampliación siguen la cuadrícula y se dibujan como el resto.)
+      ctx.strokeStyle = KF.PALETA.NUEVO || "#7C3AED";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      for (const e of this.data.aristas) {
+        if (!e.nuevo || e.ampliacion) continue;
+        const p1 = this.pos[e.u];
+        const p2 = this.pos[e.v];
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+      }
+      ctx.stroke();
+      for (const n of this.data.nodeList) {
+        if (!n.nuevo || n.ampliacion) continue;
+        const p = this.pos[n.id];
+        ctx.beginPath();
+        ctx.fillStyle = "#FFFFFF";
+        ctx.arc(p.x, p.y, 3.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = 1.8;
+        ctx.strokeStyle = KF.PALETA.NUEVO || "#7C3AED";
+        ctx.stroke();
+      }
     }
 
     setFocusZone(zone) {
@@ -192,7 +225,22 @@
       this._buildBaseLayer();
     }
 
+    /** Fila y columna (con decimales) bajo el cursor, o null si cae fuera del almacén. */
+    aCoordenadas(clientX, clientY) {
+      const rect = this.canvas.getBoundingClientRect();
+      const x = ((clientX - rect.left) / rect.width) * this.opts.width;
+      const y = ((clientY - rect.top) / rect.height) * this.opts.height;
+      const col = (x - this.opts.padLeft) / this.cellW;
+      const fila = (y - this.opts.padTop) / this.cellH;
+      if (fila < -0.5 || fila > this.data.rows - 0.5 || col < -0.5 || col > this.data.cols - 0.5) return null;
+      return { fila, col };
+    }
+
     _nearestNode(clientX, clientY) {
+      if (this.data.masCercano) {
+        const p = this.aCoordenadas(clientX, clientY);
+        return p ? this.data.masCercano(p.fila, p.col, 0.6) : null;
+      }
       const rect = this.canvas.getBoundingClientRect();
       const x = ((clientX - rect.left) / rect.width) * this.opts.width;
       const y = ((clientY - rect.top) / rect.height) * this.opts.height;
@@ -236,7 +284,13 @@
       };
 
       this._onClick = (ev) => {
-        if (!this.opts.interactive || !this.opts.onNodeClick) return;
+        if (!this.opts.interactive) return;
+        if (this.opts.onMapClick) {
+          const p = this.aCoordenadas(ev.clientX, ev.clientY);
+          const exacto = p && this.data.masCercano ? this.data.masCercano(p.fila, p.col, 0.3) : null;
+          if (this.opts.onMapClick(p, exacto ? exacto.id : null, this._nearestNode(ev.clientX, ev.clientY))) return;
+        }
+        if (!this.opts.onNodeClick) return;
         const node = this._nearestNode(ev.clientX, ev.clientY);
         if (node) this.opts.onNodeClick(node.id);
       };
@@ -373,6 +427,13 @@
         for (const w of overlay.workers) {
           const p = this.pos[w.node];
           if (!p) continue;
+          if (w.halo) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, (w.radius || 4.8) + 3.4, 0, Math.PI * 2);
+            ctx.lineWidth = 2.4;
+            ctx.strokeStyle = w.halo;
+            ctx.stroke();
+          }
           ctx.beginPath();
           ctx.fillStyle = w.color || KF.PALETA.TINTA;
           ctx.arc(p.x, p.y, w.radius || 4.8, 0, Math.PI * 2);
@@ -380,6 +441,12 @@
           ctx.lineWidth = 1.6;
           ctx.strokeStyle = "#FFFFFF";
           ctx.stroke();
+          if (w.etiqueta) {
+            ctx.font = "700 8px 'JetBrains Mono', Consolas, monospace";
+            ctx.textAlign = "center";
+            ctx.fillStyle = KF.PALETA.TINTA;
+            ctx.fillText(w.etiqueta, p.x, p.y - (w.radius || 4.8) - 4);
+          }
         }
       }
 
@@ -458,6 +525,31 @@
         ctx.strokeStyle = "#FFFFFF";
         ctx.stroke();
         ctx.restore();
+      }
+
+      // Marcas puntuales (p. ej. dónde un operario esperó o cedió el paso)
+      if (overlay.marcas && overlay.marcas.length > 0) {
+        for (const mk of overlay.marcas) {
+          const p = this.pos[mk.node];
+          if (!p) continue;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, mk.radius || 6, 0, Math.PI * 2);
+          ctx.lineWidth = 2;
+          ctx.setLineDash(mk.dash ? [2, 2] : []);
+          ctx.strokeStyle = mk.color || KF.PALETA.FRENTE;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+
+      // Ubicación elegida como primer extremo de un pasillo nuevo
+      if (overlay.seleccion && this.pos[overlay.seleccion]) {
+        const p = this.pos[overlay.seleccion];
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.lineWidth = 2.6;
+        ctx.strokeStyle = KF.PALETA.NUEVO || "#7C3AED";
+        ctx.stroke();
       }
 
       // 12. Halo interactivo en el nodo bajo el cursor

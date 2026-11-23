@@ -956,6 +956,8 @@ select:focus-visible {
 
 .segmented {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   background: var(--paper-alt);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1594,6 +1596,50 @@ details.kf-details[open] summary {
   }
 }
 /* __PYTHON_CSS_END__ */
+
+.grid-explore > *, .grid-2 > *, .grid-3 > * { min-width: 0; }
+
+/* ---------- Edición del grafo (dentro de «Cambiar») ---------- */
+.kf-editor {
+  border: 1px dashed #c4b5fd;
+  background: #faf8ff;
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.kf-editor .row { gap: 10px; }
+.kf-editor-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: var(--imperial); }
+.kf-editor-title .chip-nuevo { background: #ede9fe; color: #5b21b6; }
+.kf-progress { height: 6px; border-radius: 6px; background: #ede9fe; overflow: hidden; }
+.kf-progress > span { display: block; height: 100%; width: 0; background: #7c3aed; transition: width .1s linear; }
+.kf-msg { font-size: 13px; padding: 7px 10px; border-radius: 8px; background: #f1f5f9; color: var(--imperial); }
+.kf-msg.ok { background: #ecfdf5; color: #065f46; }
+.kf-msg.error { background: #fef2f2; color: #991b1b; }
+.kf-hint { font-size: 12.5px; color: var(--muted, #516682); margin: 0; }
+.segmented button.seg-nuevo.active { background: #7c3aed; color: #fff; }
+kbd { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 11px; border: 1px solid #cbd5e1; border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: #fff; }
+
+/* ---------- Mediciones por algoritmo ---------- */
+.kf-medidas { width: 100%; border-collapse: collapse; font-size: 13px; }
+.kf-medidas th { text-align: left; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: #516682; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.kf-medidas td { padding: 7px 8px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
+.kf-medidas td.num { font-family: 'JetBrains Mono', Consolas, monospace; white-space: nowrap; }
+.kf-medidas .alg-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.kf-medidas-wrap { overflow-x: auto; }
+.kf-medidas-nota { font-size: 12px; color: #516682; margin: 8px 0 0; }
+.kf-calculando { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.kf-spinner { width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid #dbe4f0; border-top-color: var(--imperial); animation: kfspin .8s linear infinite; }
+@keyframes kfspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .kf-spinner { animation-duration: 3s; } }
+
+/* ---------- Evitar choques en el turno ---------- */
+.kf-eventos { list-style: none; margin: 0; padding: 0; max-height: 236px; overflow-y: auto; font-size: 13px; }
+.kf-eventos li { display: flex; gap: 8px; padding: 6px 4px; border-bottom: 1px solid #eef2f7; align-items: baseline; }
+.kf-eventos li.actual { background: #fff8db; }
+.kf-eventos .t { font-family: 'JetBrains Mono', Consolas, monospace; color: #516682; min-width: 54px; }
+.kf-tag { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+.kf-tag.espera { background: #fff4cc; color: #8a5a12; }
+.kf-tag.cede { background: #ede9fe; color: #5b21b6; }
+.kf-tag.conflicto { background: #fee2e2; color: #991b1b; }
 </style>
 </head>
 
@@ -1636,15 +1682,6 @@ details.kf-details[open] summary {
           </svg>
           <span>Simular</span>
         </a>
-        <a href="#editar" class="nav-link" data-nav="editar" title="Editar grafo">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="6" cy="6" r="2.5" />
-            <circle cx="18" cy="9" r="2.5" />
-            <circle cx="9" cy="18" r="2.5" />
-            <path d="M8.3 7.1 15.7 8M7 8.4l1.4 7.2M17 16v6m-3-3h6" />
-          </svg>
-          <span>Editar grafo</span>
-        </a>
 
         <div class="nav-section-label">Evidencia</div>
         <a href="#resultados" class="nav-link" data-nav="resultados" title="Resultados">
@@ -1675,7 +1712,7 @@ details.kf-details[open] summary {
             <span class="status-dot"></span>
             <strong>Motor nativo JS</strong>
           </div>
-          <div class="status-meta">1 800 nodos · 3 515 aristas</div>
+          <div class="status-meta" id="kf-status-meta" aria-live="polite">1 800 nodos · 3 515 aristas</div>
         </div>
 
         <button id="sidebar-collapse-btn" class="sidebar-collapse-btn" type="button" aria-label="Retraer barra lateral"
@@ -1745,12 +1782,13 @@ details.kf-details[open] summary {
   <div id="map-tooltip" class="map-tooltip" role="tooltip" hidden></div>
 
   <script src="data/dataset.js?v=20261122"></script>
-  <script src="js/data.js?v=20261122"></script>
-  <script src="js/algorithms.js?v=20261122"></script>
-  <script src="js/canvas.js?v=20261122"></script>
-  <script src="js/grafo-editable.js?v=20261123"></script>
-  <script src="js/editar.js?v=20261123"></script>
-  <script src="js/app.js?v=20261122"></script>
+  <script src="js/data.js?v=20261123b"></script>
+  <script src="js/algorithms.js?v=20261123b"></script>
+  <script src="js/canvas.js?v=20261123b"></script>
+  <script src="js/edicion.js?v=20261123b"></script>
+  <script src="js/tareas.js?v=20261123b"></script>
+  <script src="js/motor.js?v=20261123b"></script>
+  <script src="js/app.js?v=20261123b"></script>
 </body>
 
 </html>

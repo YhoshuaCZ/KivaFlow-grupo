@@ -25,6 +25,7 @@
       edmonds_karp: "#F7CFD2",
     },
     FRENTE: "#FDC500",
+    NUEVO: "#7C3AED",
     AVERIA: "#C1121F",
     CONGESTION: { Baja: "#DCE4EE", Media: "#EAB308", Alta: "#E05A2B" },
     CONGESTION_SUAVE: { Baja: "#E3EAF2", Media: "#E8C65A", Alta: "#E67E53" },
@@ -130,7 +131,13 @@
       nodosText = await rn.text();
       aristasText = await ra.text();
     }
+    const data = KF.construirDataset(nodosText, aristasText);
+    KF.DATA = data;
+    return data;
+  };
 
+  /** Arma el grafo desde el texto de los CSV. Lo usan la página y el Web Worker. */
+  KF.construirDataset = function (nodosText, aristasText) {
     const rawNodos = parseCSV(nodosText);
     const rawAristas = parseCSV(aristasText);
 
@@ -273,8 +280,9 @@
       buildCapacities,
       rows: 45,
       cols: 40,
+      _csv: { nodos: nodosText, aristas: aristasText },
     };
-    KF.DATA = data;
+    if (KF.hacerEditable) KF.hacerEditable(data);
     return data;
   };
-})(window);
+})(typeof window !== "undefined" ? window : self);
