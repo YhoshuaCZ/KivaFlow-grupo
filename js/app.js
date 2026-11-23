@@ -2643,6 +2643,7 @@
     explorar: renderExplorar,
     comparar: renderUnifiedSimular,
     simular: renderUnifiedSimular,
+    editar: (main, data) => KF.renderEditar(main, data, { pageHeader, registerCleanup }),
     resultados: renderResultados,
     verificar: renderVerificar,
     acerca: renderAcerca,
